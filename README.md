@@ -32,4 +32,5 @@ Les réglages sont enregistrés dans `%APPDATA%\VoicemeeterBG\config.ini` (on pe
 
 - Windows 8.1 ou plus récent pour le mode intelligent.
 - En mode intelligent, le masque est recalculé `fps` fois par seconde : un élément qui bouge vite peut être légèrement teinté par l'image pendant un instant.
-- Si Voicemeeter est lancé en administrateur, VoicemeeterBG doit l'être aussi.
+- Si Voicemeeter est lancé en administrateur, VoicemeeterBG doit l'être aussi .
+  
