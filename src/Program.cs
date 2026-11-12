@@ -27,7 +27,7 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("VoicemeeterBG")]
 [assembly: AssemblyProduct("VoicemeeterBG")]
-[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
 
 namespace VoicemeeterBG
 {
@@ -294,8 +294,12 @@ namespace VoicemeeterBG
         bool shown;
         bool dirty = true;        // image ou reglages modifies
         int lastCapture;
-        Surface capture, output;
+        Surface scratch, capture, output;   // capture en cours, derniere capture valide, overlay
         int[] image;              // image mise a la taille, BGRA premultiplie
+        bool hasCapture;          // "capture" contient une image valide de Voicemeeter
+        int badCaptures;          // captures ratees consecutives
+        int bgLevel = -1;         // niveau du fond de Voicemeeter, verrouille une fois trouve
+        int bgCandidate, bgCandidateCount;
 
         public Overlay(IntPtr target, Config cfg)
         {
@@ -350,8 +354,10 @@ namespace VoicemeeterBG
                 {
                     w = rc.Right; h = rc.Bottom;
                     FreeSurfaces();
+                    scratch = new Surface(w, h);
                     capture = new Surface(w, h);
                     output = new Surface(w, h);
+                    hasCapture = false;
                     image = null;
                     dirty = true;
                 }
@@ -404,61 +410,99 @@ namespace VoicemeeterBG
                 output.DC, ref src, 0, ref bf, Native.ULW_ALPHA);
         }
 
+        // Capture Voicemeeter dans "scratch" et, si l'image est valide, l'echange
+        // avec "capture". Une capture ratee (noire, unie) est simplement ignoree :
+        // on garde la precedente, sinon l'image clignoterait.
+        unsafe void Grab()
+        {
+            bool ok = Native.PrintWindow(Target, scratch.DC,
+                          Native.PW_CLIENTONLY | Native.PW_RENDERFULLCONTENT) ||
+                      Native.PrintWindow(Target, scratch.DC, Native.PW_CLIENTONLY);
+            Native.GdiFlush();
+
+            int n = w * h;
+            uint* px = (uint*)scratch.Bits;
+            int* hist = stackalloc int[256];
+            for (int i = 0; i < 256; i++) hist[i] = 0;
+            int samples = 0;
+            for (int i = 0; i < n; i += 3) { hist[Level(px[i])]++; samples++; }
+
+            int top = 0;
+            for (int v = 1; v < 256; v++) if (hist[v] > hist[top]) top = v;
+            if (!ok || hist[top] >= samples || hist[0] > samples * 6 / 10)
+            {
+                badCaptures++;
+                return;
+            }
+            badCaptures = 0;
+            Surface t = scratch; scratch = capture; capture = t;
+            hasCapture = true;
+
+            // Le fond de Voicemeeter est la teinte sombre la plus frequente. On la
+            // cherche sur une fenetre glissante (plus stable qu'un seul niveau).
+            int est = 0, bestSum = -1;
+            for (int v = 0; v <= 140; v++)
+            {
+                int sum = 0;
+                for (int d = -6; d <= 6; d++)
+                    if (v + d >= 0 && v + d < 256) sum += hist[v + d];
+                if (sum > bestSum) { bestSum = sum; est = v; }
+            }
+            // Le niveau retenu est verrouille : il ne change que si une autre valeur
+            // s'impose durablement (environ 2 s), jamais d'une capture a l'autre.
+            if (bgLevel < 0) bgLevel = est;
+            else if (Math.Abs(est - bgLevel) <= 5) bgCandidateCount = 0;
+            else
+            {
+                if (bgCandidateCount > 0 && Math.Abs(est - bgCandidate) <= 5) bgCandidateCount++;
+                else { bgCandidate = est; bgCandidateCount = 1; }
+                if (bgCandidateCount >= 2 * cfg.Fps)
+                {
+                    bgLevel = bgCandidate;
+                    bgCandidateCount = 0;
+                }
+            }
+        }
+
         // Calcule les pixels de l'overlay. Retourne true si quelque chose a change.
         unsafe bool Compose()
         {
             int n = w * h;
-            uint* cap = (uint*)capture.Bits;
-            uint* dst = (uint*)output.Bits;
             byte* lut = stackalloc byte[256];   // niveau du pixel Voicemeeter -> alpha
             int opacity = cfg.Opacity * 255 / 100;
             bool masked = false;
 
             if (cfg.Smart)
             {
-                bool ok = Native.PrintWindow(Target, capture.DC,
-                              Native.PW_CLIENTONLY | Native.PW_RENDERFULLCONTENT) ||
-                          Native.PrintWindow(Target, capture.DC, Native.PW_CLIENTONLY);
-                Native.GdiFlush();
-                if (ok)
+                Grab();
+                if (hasCapture)
                 {
-                    // Le fond de Voicemeeter est la teinte sombre la plus frequente :
-                    // on la retrouve par histogramme plutot que de la coder en dur.
-                    int* hist = stackalloc int[256];
-                    for (int i = 0; i < 256; i++) hist[i] = 0;
-                    int samples = 0;
-                    for (int i = 0; i < n; i += 3) { hist[Level(cap[i])]++; samples++; }
-
-                    int top = 0, bg = 0;
-                    for (int v = 1; v < 256; v++)
+                    int tol = cfg.Sensitivity == 0 ? 8 : (cfg.Sensitivity == 1 ? 16 : 30);
+                    int soft = cfg.Sensitivity == 0 ? 24 : (cfg.Sensitivity == 1 ? 40 : 60);
+                    int full = bgLevel + 6 + tol;
+                    for (int v = 0; v < 256; v++)
                     {
-                        if (hist[v] > hist[top]) top = v;
-                        if (v <= 140 && hist[v] > hist[bg]) bg = v;
+                        int a = v <= full ? opacity
+                              : (v >= full + soft ? 0 : opacity * (full + soft - v) / soft);
+                        lut[v] = (byte)a;
                     }
-                    // Capture d'une seule couleur = capture ratee : pas de masque.
-                    if (hist[top] < samples)
-                    {
-                        int tol = cfg.Sensitivity == 0 ? 8 : (cfg.Sensitivity == 1 ? 16 : 30);
-                        int soft = cfg.Sensitivity == 0 ? 24 : (cfg.Sensitivity == 1 ? 40 : 60);
-                        int full = bg + tol;
-                        for (int v = 0; v < 256; v++)
-                        {
-                            int a = v <= full ? opacity
-                                  : (v >= full + soft ? 0 : opacity * (full + soft - v) / soft);
-                            lut[v] = (byte)a;
-                        }
-                        masked = true;
-                    }
+                    masked = true;
+                }
+                else if (badCaptures < cfg.Fps)
+                {
+                    return false;   // pas encore de capture valide : on attend
                 }
             }
             if (!masked)
             {
-                // Mode simple, ou repli si la capture a echoue : opacite uniforme
-                // (plafonnee dans le cas du repli pour ne jamais masquer l'interface).
+                // Mode simple, ou repli si la capture echoue durablement : opacite
+                // uniforme (plafonnee dans le cas du repli pour ne pas masquer l'interface).
                 int a = cfg.Smart ? Math.Min(opacity, 90) : opacity;
                 for (int v = 0; v < 256; v++) lut[v] = (byte)a;
             }
 
+            uint* cap = (uint*)capture.Bits;
+            uint* dst = (uint*)output.Bits;
             bool changed = false;
             fixed (int* imgInt = image)
             {
@@ -539,6 +583,7 @@ namespace VoicemeeterBG
 
         void FreeSurfaces()
         {
+            if (scratch != null) { scratch.Dispose(); scratch = null; }
             if (capture != null) { capture.Dispose(); capture = null; }
             if (output != null) { output.Dispose(); output = null; }
         }
