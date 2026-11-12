@@ -9,7 +9,7 @@ Voicemeeter ne permet pas de changer son fond. VoicemeeterBG pose donc une fenê
 1. Double-cliquer sur `build.bat` : il crée `VoicemeeterBG.exe` avec le compilateur C# déjà présent dans Windows (rien à installer).
 2. Lancer `VoicemeeterBG.exe` et choisir une image.
 
-L'exécutable est aussi produit par GitHub Actions (onglet *Actions* du dépôt, artefact `VoicemeeterBG`).
+L'exécutable prêt à l'emploi est aussi disponible dans les *Releases* du dépôt.
 
 ## Utilisation
 

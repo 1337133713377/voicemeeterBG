@@ -1,0 +1,28 @@
+name: release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (ex. 1.0.0)"
+        required: true
+        default: "1.0.0"
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile
+        shell: cmd
+        run: build.bat
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "v$VERSION" VoicemeeterBG.exe \
+            --target "$GITHUB_SHA" \
+            --title "VoicemeeterBG v$VERSION" \
+            --notes "Image de fond pour toutes les fenêtres Voicemeeter (standard, Banana, Potato). Télécharger VoicemeeterBG.exe, le lancer, puis choisir une image. Réglages par clic droit sur l'icône de la zone de notification."
