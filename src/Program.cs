@@ -27,7 +27,7 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("VoicemeeterBG")]
 [assembly: AssemblyProduct("VoicemeeterBG")]
-[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyVersion("1.0.2.0")]
 
 namespace VoicemeeterBG
 {
@@ -300,6 +300,8 @@ namespace VoicemeeterBG
         int badCaptures;          // captures ratees consecutives
         int bgLevel = -1;         // niveau du fond de Voicemeeter, verrouille une fois trouve
         int bgCandidate, bgCandidateCount;
+        byte[] alphaNow, alphaWait;   // alpha affiche par pixel, et attente avant de le remonter
+        bool filterReady;
 
         public Overlay(IntPtr target, Config cfg)
         {
@@ -358,6 +360,9 @@ namespace VoicemeeterBG
                     capture = new Surface(w, h);
                     output = new Surface(w, h);
                     hasCapture = false;
+                    alphaNow = new byte[w * h];
+                    alphaWait = new byte[w * h];
+                    filterReady = false;
                     image = null;
                     dirty = true;
                 }
@@ -503,13 +508,29 @@ namespace VoicemeeterBG
 
             uint* cap = (uint*)capture.Bits;
             uint* dst = (uint*)output.Bits;
+            // Filtre anti-clignotement : des qu'un pixel de Voicemeeter s'eclaire,
+            // l'image s'y efface tout de suite ; elle n'y revient (en fondu) que si
+            // le pixel est reste sombre environ une demi-seconde. Une zone qui
+            // change sans arret (vumetre, capture prise en plein redessin) reste
+            // donc degagee au lieu de faire clignoter l'image.
+            bool snap = !masked || !filterReady || dirty;
+            int hold = Math.Max(2, Math.Min(250, cfg.Fps / 2));
+            uint step = (uint)Math.Max(16, 1020 / cfg.Fps);
+            filterReady = masked;
+
             bool changed = false;
             fixed (int* imgInt = image)
+            fixed (byte* now = alphaNow, wait = alphaWait)
             {
                 uint* img = (uint*)imgInt;
                 for (int i = 0; i < n; i++)
                 {
-                    uint a = lut[Level(cap[i])];
+                    uint t = lut[Level(cap[i])];
+                    uint a = now[i];
+                    if (snap || t <= a) { a = t; wait[i] = 0; }
+                    else if (wait[i] < hold) wait[i]++;
+                    else a = a + step > t ? t : a + step;
+                    now[i] = (byte)a;
                     uint o = 0;
                     if (a != 0)
                     {
